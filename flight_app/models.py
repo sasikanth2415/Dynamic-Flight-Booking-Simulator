@@ -16,6 +16,7 @@ AIRLINE_SERVICE_CHOICES = [
     ('premium', 'Premium'),
 ]
 
+
 class Airline(models.Model):
     name = models.CharField(max_length=120)
     code = models.CharField(max_length=10, unique=True)
@@ -69,9 +70,8 @@ class Booking(models.Model):
     luggage_kg = models.DecimalField(max_digits=6, decimal_places=2, default=0.0)
     price_paid = models.DecimalField(max_digits=10, decimal_places=2)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=PENDING)
+    pnr = models.CharField(max_length=12, unique=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    confirmation_code = models.CharField(max_length=36, blank=True, null=True)
 
     def __str__(self):
-        return f"Booking {self.id} - {self.passenger_name} ({self.status})"
-
+        return f"Booking {self.pnr} - {self.passenger_name} ({self.status})"
