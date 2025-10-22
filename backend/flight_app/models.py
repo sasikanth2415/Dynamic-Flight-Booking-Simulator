@@ -70,4 +70,4 @@ class Booking(models.Model):
     confirmation_code = models.CharField(max_length=36, blank=True, null=True)
 
     def __str__(self):
-        return f"Booking {self.id} - {self.passenger_name} ({self.status})"
+        return f"Booking {self.confirmation_code} - {self.passenger_name} ({self.status})"
