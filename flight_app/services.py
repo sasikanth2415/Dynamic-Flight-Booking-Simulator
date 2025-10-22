@@ -1,6 +1,8 @@
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, timezone
 import uuid
+from django.db import transaction
+from .models import Booking, Seat
 
 SEAT_CLASS_MULTIPLIER = {
     'economy': Decimal('1.00'),
@@ -30,6 +32,10 @@ def _round(d: Decimal):
     return d.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
 
+def generate_pnr():
+    return uuid.uuid4().hex[:12].upper()
+
+
 def calculate_price(
     base_price: Decimal,
     seat_class: str,
@@ -38,86 +44,65 @@ def calculate_price(
     booking_datetime=None,
     passenger_age: int = 30,
     luggage_kg: Decimal = Decimal('0'),
-    seat_extra: Decimal = Decimal('0'),
+    seat_extra: Decimal = Decimal('0')
 ):
     if booking_datetime is None:
         booking_datetime = datetime.now(timezone.utc)
 
     price = Decimal(base_price)
-    price *= SEAT_CLASS_MULTIPLIER.get(seat_class, Decimal('1.0'))
-    price *= AIRLINE_SERVICE_MULTIPLIER.get(airline_service, Decimal('1.0'))
+    price *= SEAT_CLASS_MULTIPLIER.get(seat_class, 1)
+    price *= AIRLINE_SERVICE_MULTIPLIER.get(airline_service, 1)
     price += Decimal(seat_extra)
 
-    extra_luggage = Decimal('0')
+    # luggage surcharge
     if luggage_kg > INCLUDED_LUGGAGE_KG:
-        extra_luggage = (luggage_kg - INCLUDED_LUGGAGE_KG) * EXTRA_LUGGAGE_RATE_PER_KG
-        price += extra_luggage
+        price += (luggage_kg - INCLUDED_LUGGAGE_KG) * EXTRA_LUGGAGE_RATE_PER_KG
 
-    delta = departure_datetime - booking_datetime
-    days = Decimal(delta.total_seconds()) / Decimal(86400)
+    # time-based multiplier
+    delta_days = (departure_datetime - booking_datetime).total_seconds() / 86400
+    if delta_days <= 3:
+        price *= Decimal('1.50')
+    elif delta_days <= 7:
+        price *= Decimal('1.25')
+    elif delta_days <= 30:
+        price *= Decimal('1.05')
 
-    if days < 0:
-        time_multiplier = Decimal('1.0')
-    elif days <= 3:
-        time_multiplier = Decimal('1.50')
-    elif days <= 7:
-        time_multiplier = Decimal('1.25')
-    elif days <= 30:
-        time_multiplier = Decimal('1.05')
-    else:
-        time_multiplier = Decimal('1.00')
-
-    price *= time_multiplier
-
+    # age-based discount
     if passenger_age <= AGE_DISCOUNTS['child_max_age']:
         price *= AGE_DISCOUNTS['child_discount']
     elif passenger_age >= AGE_DISCOUNTS['senior_min_age']:
         price *= AGE_DISCOUNTS['senior_discount']
 
-    final_price = _round(price)
-    breakdown = {
-        'base_price': _round(Decimal(base_price)),
-        'seat_class_multiplier': SEAT_CLASS_MULTIPLIER.get(seat_class, Decimal('1.0')),
-        'airline_service_multiplier': AIRLINE_SERVICE_MULTIPLIER.get(airline_service, Decimal('1.0')),
-        'seat_extra': _round(Decimal(seat_extra)),
-        'extra_luggage': _round(extra_luggage),
-        'time_multiplier': time_multiplier,
-        'age_applied': 'child' if passenger_age <= AGE_DISCOUNTS['child_max_age'] else ('senior' if passenger_age >= AGE_DISCOUNTS['senior_min_age'] else 'none'),
-        'final_price': final_price,
-    }
-    return final_price, breakdown
+    return _round(price)
 
 
-def book_seat_and_create_booking(
-    user,
-    flight,
-    seat,
-    passenger_name,
-    passenger_age,
-    luggage_kg,
-    booking_datetime=None
-):
-    from .models import Booking
-    from django.db import transaction
+def simulate_payment(success=True):
+    return success
 
-    if booking_datetime is None:
-        booking_datetime = datetime.now(timezone.utc)
 
+def book_seat(user, flight, seat, passenger_name, passenger_age, luggage_kg):
     if seat.is_booked:
         return None, "Seat already booked"
 
-    final_price, breakdown = calculate_price(
-        base_price=flight.base_price,
-        seat_class=seat.seat_class,
-        airline_service=flight.airline.service_tier,
-        departure_datetime=flight.departure,
-        booking_datetime=booking_datetime,
-        passenger_age=passenger_age,
-        luggage_kg=Decimal(luggage_kg),
-        seat_extra=seat.extra_cost,
-    )
-
     with transaction.atomic():
+        # Lock seat for concurrency safety
+        seat = Seat.objects.select_for_update().get(pk=seat.pk)
+        if seat.is_booked:
+            return None, "Seat already booked"
+
+        price = calculate_price(
+            base_price=flight.base_price,
+            seat_class=seat.seat_class,
+            airline_service=flight.airline.service_tier,
+            departure_datetime=flight.departure,
+            passenger_age=passenger_age,
+            luggage_kg=luggage_kg,
+            seat_extra=seat.extra_cost
+        )
+
+        if not simulate_payment(True):
+            return None, "Payment failed"
+
         seat.is_booked = True
         seat.save()
 
@@ -127,11 +112,22 @@ def book_seat_and_create_booking(
             seat=seat,
             passenger_name=passenger_name,
             passenger_age=passenger_age,
-            luggage_kg=Decimal(luggage_kg),
-            price_paid=final_price,
+            luggage_kg=luggage_kg,
+            price_paid=price,
             status=Booking.CONFIRMED,
-            confirmation_code=str(uuid.uuid4()),
+            pnr=generate_pnr()
         )
 
-    return booking, {'pricing_breakdown': breakdown}
+    return booking, None
 
+
+def cancel_booking(booking):
+    with transaction.atomic():
+        booking.status = Booking.CANCELLED
+        booking.seat.is_booked = False
+        booking.seat.save()
+        booking.save()
+
+
+def get_booking_history(user):
+    return Booking.objects.filter(user=user).order_by('-created_at')
