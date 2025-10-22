@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Flight, Seat, Booking, Airline
+from .models import Airline, Flight, Seat, Booking
 
 class AirlineSerializer(serializers.ModelSerializer):
     class Meta:
@@ -23,8 +23,8 @@ class SeatSerializer(serializers.ModelSerializer):
 class BookingSerializer(serializers.ModelSerializer):
     flight = FlightSerializer(read_only=True)
     seat = SeatSerializer(read_only=True)
+
     class Meta:
         model = Booking
         fields = '__all__'
-        read_only_fields = ('price_paid','status','confirmation_code','created_at')
-
+        read_only_fields = ('price_paid', 'status', 'pnr', 'created_at')
